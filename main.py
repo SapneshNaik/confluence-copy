@@ -167,7 +167,7 @@ def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: st
     response = requests.request(
         "POST", upload_uri, auth=HTTPBasicAuth(username, pwd), headers=headers, files=files)
 
-    if not response.status_code == 200:
+    if not response.status_code == 200:      
         raise Exception("Failed to upload attachment {} - {}".format(
             file, page_id), response.text)
 
@@ -183,8 +183,8 @@ def cleanup_temp_files():
     os.remove('temp')
 
 @app.command()
-def update_page(source_id: Annotated[str, typer.Option(help="Source page id.")],
-              destination_id: Annotated[str, typer.Option(help="Destination page id.")]):
+def update_page(source_id: Annotated[str, typer.Option(help="Page id in source Confluence.")],
+              destination_id: Annotated[str, typer.Option(help="Page id in destination Confluence.")]):
     """
         Copy a page from one Confluence instance to another
     """
