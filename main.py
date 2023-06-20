@@ -1,13 +1,18 @@
 import json
 import logging
 import os
+import shutil
 import requests
+import re
 import typer
 from dotenv import load_dotenv
 from requests.auth import HTTPBasicAuth
 from typing_extensions import Annotated
 from os import listdir
 from os.path import isfile, join
+from treelib import Node, Tree
+
+from Page import Page
 
 # init command line library
 app = typer.Typer()
@@ -40,13 +45,12 @@ def get_page_details(page_id: str, url: str, username: str, pwd: str):
         raise Exception("Failed to read page body", response.text)
     return response.json()
 
-
 def update_page_body(page_id: str, source_page_details: dict, url: str, username: str, pwd: str):
     """
         Update page body
     """
     verson_comment = "confluence-copier: SourceURL: {}, SourcePageID: {}, SourcePageVersion: {}, SourcePageSpace: {}, SourcePageName: {}, User: {}".format(
-        source_page_details['_links']['base'], source_page_details['id'], source_page_details['title'], source_page_details['version']['number'], source_page_details['space']['name'], username)
+        source_page_details['_links']['base'], source_page_details['id'], source_page_details['title'], source_page_details['version']['number'], source_page_details[space_key]['name'], username)
 
     logging.info("Updating Page Body with the version comment")
     logging.info(verson_comment)
@@ -167,24 +171,119 @@ def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: st
     response = requests.request(
         "POST", upload_uri, auth=HTTPBasicAuth(username, pwd), headers=headers, files=files)
 
-    if not response.status_code == 200:      
+    if not response.status_code == 200:
         raise Exception("Failed to upload attachment {} - {}".format(
             file, page_id), response.text)
 
     logging.info("Uploaded {} to page {}".format(file_names, page_id))
 
-    print(response.text)
+    # print(response.text)
+
 
 def cleanup_temp_files():
     """
         Delete the temp folder
     """
     logging.info("Deleting the temp folder")
-    os.remove('temp')
+    shutil.rmtree('temp')
+
+def get_space_documents_recursively(space_key, url, username, pwd):
+    """
+        Recursively get list of documents in a space.
+    """
+
+    logging.info("Reading space hierarchy: {}".format(space_key))
+
+    attachments_uri = "{}/content?type=page&spaceKey={}&status=current&limit=20000&expand=ancestors,descendants.page".format(
+        url, space_key)
+    response = requests.request(
+        "GET", attachments_uri, auth=HTTPBasicAuth(username, pwd))
+    if not response.status_code == 200:
+        raise Exception("Failed to read page attachments", response.text)
+    data = response.json()['results']
+
+    # init space tree
+    tree = Tree()
+
+    tree.create_node(space_key, space_key)
+
+    # loop over list of pages.
+    for page in data:
+        if len(page['ancestors']) == 0:  # root node
+            node = tree.get_node(page['id'])
+
+            if node is None:
+                tree.create_node(page['title'], page['id'], parent=space_key, data=Page(page))
+        else:
+            """
+                leaf node. has ancestor info in order. We loop over every ancenstor, 
+                add it as a node and then add the current page as a child to the last/nearest ancestor.
+            """
+            for counter, ancestor in enumerate(page['ancestors']):
+                # farthest ancestor has root as parent, else the parent will be the previous entry in the ancestors array.
+                parent = space_key if counter == 0 else page['ancestors'][(
+                    counter-1)]['id']
+                parent_node = tree.get_node(ancestor['id'])
+
+                # add parent node only if not visited/added before.
+                if parent_node is None:
+                    tree.create_node(ancestor['title'],
+                                    ancestor['id'], parent=parent, data=Page(ancestor))
+
+            child_node = tree.get_node(page['id'])
+
+            # add leaf node only if not visited/added before.
+            if child_node is None:
+                tree.create_node(page['title'], page['id'],
+                                parent=page['ancestors'][-1]['id'], data=Page(page))
+    
+    tree.show(sorting=True, key=lambda x: x.data.page_data['extensions']['position'])
+
+
+
+
+def create_space(space_name, url, username, pwd):
+    """
+        Create a new space.
+    """
+    uri = "{}space".format(url)
+
+    # generate space key from space name, format: https://support.atlassian.com/confluence-cloud/docs/choose-a-space-key/
+    pattern = re.compile('[\W_]+')
+    space_key = pattern.sub('', space_name)
+
+    payload = {
+        "key": space_key,
+        "name": space_name,
+        "description": {
+            "plain": {
+                "value": "Confluence-copier - User: {}".format(username),
+                "representation": "plain"
+            }
+        }
+    }
+
+    headers = {
+        'X-Atlassian-Token': 'nocheck',
+        'Content-Type': 'application/json'
+    }
+
+    response = requests.request(
+        "POST", uri, auth=HTTPBasicAuth(username, pwd), headers=headers, data=json.dumps(payload))
+
+    if not response.status_code == 200:
+        raise Exception("Failed to create space {} - {}".format(
+            space_name, space_key), response.text)
+
+    logging.info("Created new create space key: {}, name:{}".format(
+        space_name, space_key))
+
+    return space_key
+
 
 @app.command()
 def update_page(source_id: Annotated[str, typer.Option(help="Page id in source Confluence.")],
-              destination_id: Annotated[str, typer.Option(help="Page id in destination Confluence.")]):
+                destination_id: Annotated[str, typer.Option(help="Page id in destination Confluence.")]):
     """
         Copy a page from one Confluence instance to another
     """
@@ -200,17 +299,23 @@ def update_page(source_id: Annotated[str, typer.Option(help="Page id in source C
 
     update_page_body(destination_id, source_page_details, DESTINATION_CONFLUENCE_LINK,
                      DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
-    
+
     cleanup_temp_files()
 
 
-
 @app.command()
-def copy_space():
+def copy_space(source_space_key: Annotated[str, typer.Option(help="Space key in source Confluence.")],
+               destination_new_space_name: Annotated[str, typer.Option(help="New space name in destination Confluence.")]):
     """
         Create command
-    """
-    print("Deleting user: Hiro Hamada")
+    """    
+    #get space docs
+    #upload space docs one by one including attachments and as new pages with hierarchy
+    
+    get_space_documents_recursively(source_space_key, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
+
+    # space_key = create_space(destination_new_space_name, DESTINATION_CONFLUENCE_LINK,
+    #              DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
 
 
 if __name__ == "__main__":
