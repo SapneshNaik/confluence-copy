@@ -183,7 +183,7 @@ def cleanup_temp_files():
     os.remove('temp')
 
 @app.command()
-def copy_page(source_id: Annotated[str, typer.Option(help="Source page id.")],
+def update_page(source_id: Annotated[str, typer.Option(help="Source page id.")],
               destination_id: Annotated[str, typer.Option(help="Destination page id.")]):
     """
         Copy a page from one Confluence instance to another
