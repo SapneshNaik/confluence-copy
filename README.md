@@ -3,8 +3,6 @@ Confluence Copier
 
  A command line based tool to migrate documents from one Confluecne instance to another! 
 
-# This document will be updated in the future.
-
 How To Use This
 ---------------
 
