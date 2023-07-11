@@ -1,12 +1,7 @@
-Confluence Document Copy
+Confluence Copier
 ==============================
 
-Generate token here: https://id.atlassian.com/manage-profile/security/api-tokens
-What Is This?
--------------
-
-This is a simple Python command line application that can be used to copy a Confluence page from one instance to another instance.
-
+ A command line based tool to migrate documents from one Confluecne instance to another! 
 
 # This document will be updated in the future.
 
