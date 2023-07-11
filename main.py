@@ -1,3 +1,5 @@
+from functools import partial
+from itertools import repeat
 import json
 import logging
 import os
@@ -6,19 +8,22 @@ import requests
 import re
 import typer
 from dotenv import load_dotenv
+from multiprocessing.pool import ThreadPool
 from requests.auth import HTTPBasicAuth
 from typing_extensions import Annotated
 from os import listdir
 from os.path import isfile, join
 from treelib import Node, Tree
+from multiprocessing import Pool, cpu_count
 
 from Page import Page
+
 
 # init command line library
 app = typer.Typer()
 
 # configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # load env file vars
 load_dotenv()
@@ -36,7 +41,7 @@ def get_page_details(page_id: str, url: str, username: str, pwd: str):
     """
         fetch page body
     """
-    logging.info("Reading Page Body")
+    logging.info("Reading Page Body of {} from {}".format(page_id, url))
     uri = "{}/content/{}?expand=body.storage,version,space".format(
         url, page_id)
     response = requests.request(
@@ -45,15 +50,15 @@ def get_page_details(page_id: str, url: str, username: str, pwd: str):
         raise Exception("Failed to read page body", response.text)
     return response.json()
 
+
 def update_page_body(page_id: str, source_page_details: dict, url: str, username: str, pwd: str):
     """
         Update page body
     """
     verson_comment = "confluence-copier: SourceURL: {}, SourcePageID: {}, SourcePageVersion: {}, SourcePageSpace: {}, SourcePageName: {}, User: {}".format(
-        source_page_details['_links']['base'], source_page_details['id'], source_page_details['title'], source_page_details['version']['number'], source_page_details[space_key]['name'], username)
+        source_page_details['_links']['base'], source_page_details['id'], source_page_details['title'], source_page_details['version']['number'], source_page_details['space']['name'], username)
 
-    logging.info("Updating Page Body with the version comment")
-    logging.info(verson_comment)
+    logging.info("Updating body of the page {} on {}".format(page_id, url))
 
     destination_page_details = get_page_details(
         page_id, DESTINATION_CONFLUENCE_LINK, DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
@@ -97,19 +102,38 @@ def update_page_body(page_id: str, source_page_details: dict, url: str, username
     return True
 
 
-def get_attachment_list(source_id: str, url: str, username: str, pwd: str):
+def get_attachment_list(page_id: str, url: str, username: str, pwd: str):
     """
         fetch list of attachments per page
     """
-    logging.info("Read page attachments (image, GIF, Videos, file, etc)")
+    logging.info("Read page attachments (image, GIF, Videos, file, etc) of {} from {}".format(
+        page_id, url))
 
-    attachments_uri = "{}/content/{}/child/attachment?limit=1000".format(
-        url, source_id)
+    attachments_uri = "{}/content/{}/child/attachment?limit=100000".format(
+        url, page_id)
     response = requests.request(
         "GET", attachments_uri, auth=HTTPBasicAuth(username, pwd))
     if not response.status_code == 200:
         raise Exception("Failed to read page attachments", response.text)
     return response.json()['results']
+
+
+def download_file(attachment, temp_folder, page_id: str, url: str, username: str, pwd: str):
+    logging.info(
+        "Downloading attachment {} - {} from {}".format(attachment['id'], attachment['title'], url))
+    download_uri = "{}/content/{}/child/attachment/{}/download".format(
+        url, page_id, attachment['id'])
+
+    response = requests.request(
+        "GET", download_uri, auth=HTTPBasicAuth(username, pwd))
+
+    if not response.status_code == 200:
+        raise Exception("Failed to download attachment {} - {}".format(
+            attachment['id'], attachment['title']), response.text)
+
+    with open('{}/{}'.format(temp_folder, attachment['title']),
+              'wb') as file:
+        file.write(response.content)
 
 
 def download_attachments(page_id: str, url: str, username: str, pwd: str):
@@ -119,27 +143,24 @@ def download_attachments(page_id: str, url: str, username: str, pwd: str):
 
     attachments = get_attachment_list(page_id, url, username, pwd)
     # print(attachments)
-    logging.info("Found {} attachments".format(len(attachments)))
+    logging.info("Found {} attachments for page {} on {}".format(
+        len(attachments), page_id, url))
+
+    if len(attachments) == 0:
+        return
 
     temp_folder = "temp/{}".format(page_id)
     logging.info(
         "Downloading attachments to a temperory folder {}".format(temp_folder))
     os.makedirs(temp_folder, exist_ok=True)
 
-    for attachment in attachments:
-        logging.info(
-            "Downloading {} - {}".format(attachment['id'], attachment['title']))
-        download_uri = "{}/content/{}/child/attachment/{}/download".format(
-            url, page_id, attachment['id'])
 
-        response = requests.request(
-            "GET", download_uri, auth=HTTPBasicAuth(username, pwd))
-        if not response.status_code == 200:
-            raise Exception("Failed to download attachment {} - {}".format(
-                attachment['id'], attachment['title']), response.text)
+    pool = Pool(cpu_count())
 
-        open('{}/{}'.format(temp_folder, attachment['title']),
-             'wb').write(response.content)
+    pool.map(partial(download_file, temp_folder=temp_folder,
+                                                    page_id=page_id, url=url, username=username, pwd=pwd), attachments)
+    # for attachment in attachments:
+    #     download_file(attachment, temp_folder, page_id, url, username, pwd)
 
 
 def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: str):
@@ -148,6 +169,10 @@ def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: st
     """
 
     temp_folder = "temp/{}".format(folder_id)
+
+    if not os.path.exists(temp_folder):
+        logging.info("No attachments for upload")
+        return
 
     upload_uri = "{}/content/{}/child/attachment".format(
         url, page_id)
@@ -162,8 +187,12 @@ def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: st
                 '{}/{}'.format(temp_folder, file), 'rb'), 'application/octet-stream'))
         )
 
-    # print(files)
-    # return
+    if len(file_names) == 0:
+        return
+    
+    logging.info("Uploading these {} attachments: {} from {} to page {} on {}".format(
+        len(file_names), ", ".join(file_names), temp_folder, page_id, url))
+
     headers = {
         'X-Atlassian-Token': 'nocheck'
     }
@@ -175,9 +204,35 @@ def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: st
         raise Exception("Failed to upload attachment {} - {}".format(
             file, page_id), response.text)
 
-    logging.info("Uploaded {} to page {}".format(file_names, page_id))
+    logging.info("Uploaded {} to page {} on {}".format(
+        file_names, page_id, url))
 
-    # print(response.text)
+
+def remove_page_attachments(page_id, url, username, pwd):
+    """
+        Remove a Confluecne page's attachments.
+        Note: Use this operation with caution.
+    """
+    logging.info(
+        "Fetching existing attachments to remove from {} ({})".format(page_id, url))
+    
+    attachments = get_attachment_list(page_id, url, username, pwd)
+
+    logging.info("Found {} attachments".format(
+        len(attachments)))
+
+    if len(attachments) == 0:
+        return
+    
+    for attachment in attachments:
+        logging.info("Deleting attachment {} - {} ({})".format(
+            attachment['id'], attachment['title'], url))
+        delete_uri = "{}/content/{}".format(url, attachment['id'])
+        response = requests.request(
+            "DELETE", delete_uri, auth=HTTPBasicAuth(username, pwd))
+        if not response.status_code == 204:
+            raise Exception("Failed to delete attachment {} - {} ({})".format(
+                attachment['id'], attachment['title'], url))
 
 
 def cleanup_temp_files():
@@ -185,14 +240,18 @@ def cleanup_temp_files():
         Delete the temp folder
     """
     logging.info("Deleting the temp folder")
+    if not os.path.exists('temp'):
+        logging.info("No attachments for upload")
+        return
     shutil.rmtree('temp')
+
 
 def get_space_documents_recursively(space_key, url, username, pwd):
     """
         Recursively get list of documents in a space.
     """
 
-    logging.info("Reading space hierarchy: {}".format(space_key))
+    logging.info("Reading space hierarchy: {} from {}".format(space_key, url))
 
     attachments_uri = "{}/content?type=page&spaceKey={}&status=current&limit=20000&expand=ancestors,descendants.page".format(
         url, space_key)
@@ -213,7 +272,8 @@ def get_space_documents_recursively(space_key, url, username, pwd):
             node = tree.get_node(page['id'])
 
             if node is None:
-                tree.create_node(page['title'], page['id'], parent=space_key, data=Page(page))
+                tree.create_node(page['title'], page['id'],
+                                 parent=space_key, data=Page(page))
         else:
             """
                 leaf node. has ancestor info in order. We loop over every ancenstor, 
@@ -228,18 +288,17 @@ def get_space_documents_recursively(space_key, url, username, pwd):
                 # add parent node only if not visited/added before.
                 if parent_node is None:
                     tree.create_node(ancestor['title'],
-                                    ancestor['id'], parent=parent, data=Page(ancestor))
+                                     ancestor['id'], parent=parent, data=Page(ancestor))
 
             child_node = tree.get_node(page['id'])
 
             # add leaf node only if not visited/added before.
             if child_node is None:
                 tree.create_node(page['title'], page['id'],
-                                parent=page['ancestors'][-1]['id'], data=Page(page))
-    
-    tree.show(sorting=True, key=lambda x: x.data.page_data['extensions']['position'])
+                                 parent=page['ancestors'][-1]['id'], data=Page(page))
 
-
+    tree.show(sorting=True,
+              key=lambda x: x.data.page_data['extensions']['position'])
 
 
 def create_space(space_name, url, username, pwd):
@@ -289,30 +348,40 @@ def update_page(source_id: Annotated[str, typer.Option(help="Page id in source C
     """
     source_page_details = get_page_details(
         source_id, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
-    # source_page_attachments = get_attachment_list(source_id, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
 
+    # Download attachments from source page
     download_attachments(source_id, SOURCE_CONFLUENCE_LINK,
                          SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
 
+    # Remove attachments from destination page
+    remove_page_attachments(destination_id, DESTINATION_CONFLUENCE_LINK,
+                            DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
+
+    # # upload previously downloaded attachments to destination page
     upload_attachments(source_id, destination_id, DESTINATION_CONFLUENCE_LINK,
                        DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
 
+    # #Update destination page body
     update_page_body(destination_id, source_page_details, DESTINATION_CONFLUENCE_LINK,
                      DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
 
+    #Remove previosuly downloaded files from local folder
     cleanup_temp_files()
 
+
+    logging.info("Update operation completed!")
 
 @app.command()
 def copy_space(source_space_key: Annotated[str, typer.Option(help="Space key in source Confluence.")],
                destination_new_space_name: Annotated[str, typer.Option(help="New space name in destination Confluence.")]):
     """
         Create command
-    """    
-    #get space docs
-    #upload space docs one by one including attachments and as new pages with hierarchy
-    
-    get_space_documents_recursively(source_space_key, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
+    """
+    # get space docs
+    # upload space docs one by one including attachments and as new pages with hierarchy
+
+    get_space_documents_recursively(
+        source_space_key, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
 
     # space_key = create_space(destination_new_space_name, DESTINATION_CONFLUENCE_LINK,
     #              DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
