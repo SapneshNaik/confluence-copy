@@ -20,7 +20,7 @@ How To Use This
     DESTINATION_CONFLUENCE_API_TOKEN="<token>"
 ```
 4. The tool currently supports two commands, `update-page` and `copy-space`. 
-![Alt text](<CleanShot 2023-07-11 at 11.42.12@2x.png>)
+![Alt text](<assets/CleanShot 2023-07-11 at 11.42.12@2x.png>)
 
 Update-page
 -------
