@@ -128,8 +128,10 @@ def download_file(attachment, temp_folder, page_id: str, url: str, username: str
         "GET", download_uri, auth=HTTPBasicAuth(username, pwd))
 
     if not response.status_code == 200:
-        raise Exception("Failed to download attachment {} - {}".format(
-            attachment['id'], attachment['title']), response.text)
+        logging.error("Could not download {} with id {}".format(attachment['title'], attachment['id']))
+        logging.error(response.text)
+        # raise Exception("Failed to download attachment {} - {}".format(
+        #     attachment['id'], attachment['title']), response.text)
 
     with open('{}/{}'.format(temp_folder, attachment['title']),
               'wb') as file:
