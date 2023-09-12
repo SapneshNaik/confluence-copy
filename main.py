@@ -15,7 +15,7 @@ from os import listdir
 from os.path import isfile, join
 from treelib import Node, Tree
 from multiprocessing import Pool, cpu_count
-
+from typing import Optional
 from Page import Page
 
 
@@ -23,7 +23,8 @@ from Page import Page
 app = typer.Typer()
 
 # configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # load env file vars
 load_dotenv()
@@ -128,7 +129,8 @@ def download_file(attachment, temp_folder, page_id: str, url: str, username: str
         "GET", download_uri, auth=HTTPBasicAuth(username, pwd))
 
     if not response.status_code == 200:
-        logging.error("Could not download {} with id {}".format(attachment['title'], attachment['id']))
+        logging.error("Could not download {} with id {}".format(
+            attachment['title'], attachment['id']))
         logging.error(response.text)
         # raise Exception("Failed to download attachment {} - {}".format(
         #     attachment['id'], attachment['title']), response.text)
@@ -156,11 +158,10 @@ def download_attachments(page_id: str, url: str, username: str, pwd: str):
         "Downloading attachments to a temperory folder {}".format(temp_folder))
     os.makedirs(temp_folder, exist_ok=True)
 
-
     pool = Pool(cpu_count())
 
     pool.map(partial(download_file, temp_folder=temp_folder,
-                                                    page_id=page_id, url=url, username=username, pwd=pwd), attachments)
+                     page_id=page_id, url=url, username=username, pwd=pwd), attachments)
     # for attachment in attachments:
     #     download_file(attachment, temp_folder, page_id, url, username, pwd)
 
@@ -191,7 +192,7 @@ def upload_attachments(folder_id, page_id: str, url: str, username: str, pwd: st
 
     if len(file_names) == 0:
         return
-    
+
     logging.info("Uploading these {} attachments: {} from {} to page {} on {}".format(
         len(file_names), ", ".join(file_names), temp_folder, page_id, url))
 
@@ -217,7 +218,7 @@ def remove_page_attachments(page_id, url, username, pwd):
     """
     logging.info(
         "Fetching existing attachments to remove from {} ({})".format(page_id, url))
-    
+
     attachments = get_attachment_list(page_id, url, username, pwd)
 
     logging.info("Found {} attachments".format(
@@ -225,7 +226,7 @@ def remove_page_attachments(page_id, url, username, pwd):
 
     if len(attachments) == 0:
         return
-    
+
     for attachment in attachments:
         logging.info("Deleting attachment {} - {} ({})".format(
             attachment['id'], attachment['title'], url))
@@ -342,11 +343,75 @@ def create_space(space_name, url, username, pwd):
     return space_key
 
 
+def create_page(space_key, parent_id, url, username, pwd, document_name):
+    """
+        Create new document
+    """
+
+    uri = "{}content".format(url)
+
+    payload = {
+        "space": {
+            "key": space_key
+        },
+        "type": "page",
+        "title": document_name,
+        "body": {
+            "storage": {
+                "value": "Document created using Confluence Copier",
+                "representation": "wiki"
+            }
+        }}
+
+    if parent_id != -1:
+        payload['ancestors'] = []
+        payload['ancestors'].append({"id": str(parent_id)})
+
+    headers = {
+        'X-Atlassian-Token': 'nocheck',
+        'Content-Type': 'application/json'
+    }
+
+    response = requests.request(
+        "POST", uri, auth=HTTPBasicAuth(username, pwd), headers=headers, data=json.dumps(payload))
+
+    if not response.status_code == 200:
+        raise Exception("Failed to create document {} in space {} under parent {} in destination Confluence".format(
+            document_name, space_key, parent_id if parent_id != -1 else "ROOT"), response.text)
+
+    logging.info("Created new document \"{}\" with id {} under parent {}".format(
+        document_name, response.json()['id'], parent_id if parent_id != -1 else "ROOT"))
+
+    return response.json()['id']
+
+
+def get_document_name(document_id, url, username, password):
+    """
+        Create page name
+    """
+
+    uri = "{}content/{}".format(url, document_id)
+
+    headers = {
+        'X-Atlassian-Token': 'nocheck',
+        'Content-Type': 'application/json'
+    }
+
+    response = requests.request(
+        "GET", uri, auth=HTTPBasicAuth(username, password), headers=headers)
+
+    if not response.status_code == 200:
+        raise Exception("Failed to get document name {}".format(
+            document_id), response.text)
+
+    return response.json()['title']
+
+
 @app.command()
 def update_page(source_id: Annotated[str, typer.Option(help="Page id in source Confluence.")],
                 destination_id: Annotated[str, typer.Option(help="Page id in destination Confluence.")]):
     """
-        Copy a page from one Confluence instance to another
+        Update an existing page in destination Confluence with a page from source Confluence
     """
     source_page_details = get_page_details(
         source_id, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
@@ -367,11 +432,11 @@ def update_page(source_id: Annotated[str, typer.Option(help="Page id in source C
     update_page_body(destination_id, source_page_details, DESTINATION_CONFLUENCE_LINK,
                      DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
 
-    #Remove previosuly downloaded files from local folder
+    # Remove previosuly downloaded files from local folder
     cleanup_temp_files()
 
-
     logging.info("Update operation completed!")
+
 
 @app.command()
 def copy_space(source_space_key: Annotated[str, typer.Option(help="Space key in source Confluence.")],
@@ -387,6 +452,65 @@ def copy_space(source_space_key: Annotated[str, typer.Option(help="Space key in 
 
     # space_key = create_space(destination_new_space_name, DESTINATION_CONFLUENCE_LINK,
     #              DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
+
+
+@app.command()
+def create_new_page(space_key: Annotated[str, typer.Option(help="Space key in destination Confluence.")],
+                    parent_id: Annotated[int, typer.Option(help="Parent document id in destination Confluence. Pass -1 to create new document at root level")],
+                    doc_name: Annotated[str, typer.Option(help="New doc name in destination Confluence.")]):
+    """
+        Create command
+    """
+    # get space docs
+    # upload space docs one by one including attachments and as new pages with hierarchy
+
+    create_page(space_key, parent_id, DESTINATION_CONFLUENCE_LINK,
+                DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN, doc_name)
+
+
+@app.command()
+def copy_page(source_id: Annotated[str, typer.Option(help="Page id in source Confluence.")],
+              parent_id: Annotated[int, typer.Option(help="Parent document id in destination Confluence. Pass -1 to create new document at root level")],
+              destination_space_key: Annotated[str, typer.Option(help="Space key in destination Confluence.")],
+              new_doc_title: Annotated[Optional[str], typer.Option(help="New doc name in destination Confluence.")] = None,
+              ):
+    """
+        Copy a page from one Confluence instance to another
+    """
+
+    if new_doc_title is None:
+        new_doc_title = get_document_name(source_id, SOURCE_CONFLUENCE_LINK,
+                                 SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
+
+    logging.info("Copying document {} - {} from {} to {}".format(new_doc_title,
+                 source_id, SOURCE_CONFLUENCE_LINK, DESTINATION_CONFLUENCE_LINK))
+
+    doc_id = create_page(destination_space_key, parent_id, DESTINATION_CONFLUENCE_LINK,
+                         DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN, new_doc_title)
+
+    source_page_details = get_page_details(
+        source_id, SOURCE_CONFLUENCE_LINK, SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
+
+    # Download attachments from source page
+    download_attachments(source_id, SOURCE_CONFLUENCE_LINK,
+                         SOURCE_CONFLUENCE_USERNAME, SOURCE_CONFLUENCE_API_TOKEN)
+
+    # Remove attachments from destination page TODO: May be reduandant
+    remove_page_attachments(doc_id, DESTINATION_CONFLUENCE_LINK,
+                            DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
+
+    # # upload previously downloaded attachments to destination page
+    upload_attachments(source_id, doc_id, DESTINATION_CONFLUENCE_LINK,
+                       DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
+
+    # #Update destination page body
+    update_page_body(doc_id, source_page_details, DESTINATION_CONFLUENCE_LINK,
+                     DESTINATION_CONFLUENCE_USERNAME, DESTINATION_CONFLUENCE_API_TOKEN)
+
+    # Remove previosuly downloaded files from local folder
+    cleanup_temp_files()
+
+    logging.info("Copy operation completed!")
 
 
 if __name__ == "__main__":
