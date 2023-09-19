@@ -1,4 +1,4 @@
-# Confluence Copier
+# Confluence Copy
  _A command line tool to migrate documents from one Confluence instance to another._
 
 ## Features
