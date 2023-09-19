@@ -442,7 +442,7 @@ def update_page(source_id: Annotated[str, typer.Option(help="Page id in source C
 def copy_space(source_space_key: Annotated[str, typer.Option(help="Space key in source Confluence.")],
                destination_new_space_name: Annotated[str, typer.Option(help="New space name in destination Confluence.")]):
     """
-        Create command
+        Copy entire space from source Confluence to destination Confluence
     """
     # get space docs
     # upload space docs one by one including attachments and as new pages with hierarchy
@@ -459,7 +459,7 @@ def create_new_page(space_key: Annotated[str, typer.Option(help="Space key in de
                     parent_id: Annotated[int, typer.Option(help="Parent document id in destination Confluence. Pass -1 to create new document at root level")],
                     doc_name: Annotated[str, typer.Option(help="New doc name in destination Confluence.")]):
     """
-        Create command
+        Create a new page in destination Confluence.
     """
     # get space docs
     # upload space docs one by one including attachments and as new pages with hierarchy
@@ -475,7 +475,7 @@ def copy_page(source_id: Annotated[str, typer.Option(help="Page id in source Con
               new_doc_title: Annotated[Optional[str], typer.Option(help="New doc name in destination Confluence.")] = None,
               ):
     """
-        Copy a page from one Confluence instance to another
+        Copy page from source Confluence to destination Confluence
     """
 
     if new_doc_title is None:
